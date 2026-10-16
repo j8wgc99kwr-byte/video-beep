@@ -29,8 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="处理方式：mute=静音（默认），beep=用哔声盖住")
     p.add_argument("--beep", action="store_true",
                    help="快捷开关：等同于 --mode beep")
-    p.add_argument("--pad", type=float, default=0.15,
-                   help="脏话前后各多静音/哔声的秒数（默认 0.15）")
+    p.add_argument("--pad", type=float, default=0.3,
+                   help="脏话前后各多静音/哔声的秒数（默认 0.3）")
+    p.add_argument("--thorough", action="store_true",
+                   help="彻底模式：包含脏话的整个句子整段静音，更干净但会多静音一些上下文")
     p.add_argument("--no-beep-dry", action="store_true", help="（保留）")
     p.add_argument("--version", action="version", version=f"video-beep {__version__}")
     return p
@@ -48,14 +50,15 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[video-beep] 正在处理: {args.video}")
     print(f"  -> 输出: {args.output}")
-    print(f"  -> 模型: {args.model} | 模式: {mode} | 语言: {args.lang or '自动'}")
+    print(f"  -> 模型: {args.model} | 模式: {mode} | 语言: {args.lang or '自动'}"
+          f"{' | 彻底模式' if args.thorough else ''}")
     t0 = time.time()
 
     try:
         stats = censor(
             args.video, args.output,
             model=args.model, language=args.lang,
-            mode=mode, pad=args.pad,
+            mode=mode, pad=args.pad, thorough=args.thorough,
         )
     except FileNotFoundError:
         print("[错误] 找不到输入视频，请检查路径。", file=sys.stderr)

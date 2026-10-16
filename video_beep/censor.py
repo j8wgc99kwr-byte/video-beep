@@ -139,17 +139,19 @@ def extract_audio(video: str, wav: str, sample_rate: int = 16000) -> None:
 
 
 def transcribe(wav: str, model_name: str, language: str | None = None):
-    """用 faster-whisper 转写，返回 (拼接文本, 词列表)。"""
+    """用 faster-whisper 转写，返回 (拼接文本, 词列表, 段列表)。"""
     from faster_whisper import WhisperModel  # 延迟导入，加快 --help
     model = WhisperModel(model_name, device="auto", compute_type="int8")
     segments, _ = model.transcribe(
         wav, word_timestamps=True, language=language, vad_filter=True)
     words = []
+    seg_list = []
     for seg in segments:
+        seg_list.append(seg)
         for w in seg.words or []:
             words.append(w)
     full_text = "".join(w.word for w in words)
-    return full_text, words
+    return full_text, words, seg_list
 
 
 def _window_expr(windows: list[Window], pad: float) -> str:
@@ -209,11 +211,15 @@ def build_audio_filter(input_idx: int, windows: list[Window],
 
 def censor(video: str, output: str, model: str = "base",
            language: str | None = None, mode: str = "mute",
-           pad: float = 0.15, sample_rate: int = 16000) -> dict:
+           pad: float = 0.15, sample_rate: int = 16000,
+           thorough: bool = False) -> dict:
     """主入口：处理视频/音频并返回统计信息。
 
     输入可以是视频（mp4/mkv 等）也可以是纯音频（mp3/wav/m4a 等）；
     纯音频输入时输出仅含处理后的音轨。
+
+    thorough=True 时：把包含脏话的整句（整段）一起静音，处理更彻底，
+    避免单个词的时间对不准导致残留。
     """
     video = str(Path(video).resolve())
     output = str(Path(output).resolve())
@@ -223,8 +229,19 @@ def censor(video: str, output: str, model: str = "base",
         wav = tmpdir / "audio.wav"
 
         extract_audio(video, wav, sample_rate)
-        full_text, words = transcribe(str(wav), model, language)
-        windows = locate_profanity_words(words, full_text)
+        full_text, words, segments = transcribe(str(wav), model, language)
+
+        if thorough:
+            # 整句模式：每个含脏话的段整体静音
+            windows = []
+            for seg in segments:
+                low = seg.text.lower()
+                hits = _find_english_hits(low) + _find_chinese_hits(low)
+                if hits:
+                    windows.append(Window(
+                        max(0.0, seg.start - pad), seg.end + pad))
+        else:
+            windows = locate_profanity_words(words, full_text)
 
         filter_text, extra_inputs = build_audio_filter(0, windows, pad, mode, tmpdir)
 
