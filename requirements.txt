@@ -1,0 +1,4 @@
+faster-whisper>=1.0.0
+# faster-whisper 的音频解码调用了 av.open 的 metadata_errors 参数，
+# 新版 PyAV(>=19) 已删除该参数，需固定到兼容版本
+av==13.1.0

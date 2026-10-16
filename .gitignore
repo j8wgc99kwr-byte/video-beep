@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+*.wav
+*.mp4
+*.mkv
+*.avi
+*.webm
+_censored*
