@@ -22,6 +22,22 @@ class Window:
     end: float
 
 
+@dataclass
+class Word:
+    """带绝对时间戳的单个词。"""
+    word: str
+    start: float
+    end: float
+
+
+@dataclass
+class Seg:
+    """带绝对时间戳的语音段。"""
+    text: str
+    start: float
+    end: float
+
+
 def _norm_en(text: str) -> str:
     """英文归一化：小写并去掉非字母数字字符（同时抹掉屏蔽符号）。"""
     return _ALNUM.sub("", text.lower())
@@ -138,20 +154,57 @@ def extract_audio(video: str, wav: str, sample_rate: int = 16000) -> None:
           "-acodec", "pcm_s16le", "-ar", str(sample_rate), "-ac", "1", wav])
 
 
-def transcribe(wav: str, model_name: str, language: str | None = None):
-    """用 faster-whisper 转写，返回 (拼接文本, 词列表, 段列表)。"""
+def _audio_duration_sec(path: str) -> float:
+    """用 ffprobe 获取音频时长（秒）。"""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", path], capture_output=True, text=True)
+    try:
+        return float(out.stdout.strip())
+    except ValueError:
+        return 0.0
+
+
+def transcribe(wav: str, model_name: str, language: str | None = None,
+               chunk_sec: float = 600.0):
+    """用 faster-whisper 转写，返回 (拼接文本, 词列表, 段列表)。
+
+    超长音频会按 chunk_sec（默认 10 分钟）分段转写，避免一次性把整段
+    特征数组载入内存导致 OOM；各段时间戳已换算成整段音频的绝对时间。
+    """
     from faster_whisper import WhisperModel  # 延迟导入，加快 --help
+    from faster_whisper.audio import decode_audio
     model = WhisperModel(model_name, device="auto", compute_type="int8")
-    segments, _ = model.transcribe(
-        wav, word_timestamps=True, language=language, vad_filter=True)
-    words = []
-    seg_list = []
-    for seg in segments:
-        seg_list.append(seg)
-        for w in seg.words or []:
-            words.append(w)
+    sr = 16000
+
+    duration = _audio_duration_sec(wav)
+    audio = decode_audio(wav, sampling_rate=sr)
+
+    words: list[Word] = []
+    segs: list[Seg] = []
+    if duration <= chunk_sec:
+        _collect(audio, 0.0, model, language, words, segs)
+    else:
+        step = int(chunk_sec * sr)
+        for start in range(0, len(audio), step):
+            chunk = audio[start:start + step]
+            if len(chunk) < int(0.5 * sr):  # 跳过末尾不足半秒的残片
+                continue
+            _collect(chunk, start / sr, model, language, words, segs)
+
     full_text = "".join(w.word for w in words)
-    return full_text, words, seg_list
+    return full_text, words, segs
+
+
+def _collect(audio, offset: float, model, language: str | None,
+             words: list, segs: list) -> None:
+    """对一段音频转写，并把时间戳加上 offset 追加到结果列表。"""
+    segments, _ = model.transcribe(
+        audio, word_timestamps=True, language=language, vad_filter=True)
+    for seg in segments:
+        segs.append(Seg(seg.text, offset + seg.start, offset + seg.end))
+        for w in seg.words or []:
+            words.append(Word(w.word, offset + w.start, offset + w.end))
 
 
 def _window_expr(windows: list[Window], pad: float) -> str:
