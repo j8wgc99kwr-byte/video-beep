@@ -111,6 +111,27 @@ def _run(cmd: list[str]) -> None:
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def _has_video_stream(path: str) -> bool:
+    """判断输入文件是否包含视频流（没有则按纯音频处理）。"""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v",
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", path],
+        capture_output=True, text=True)
+    return bool(out.stdout.strip())
+
+
+def _audio_codec_args(output: str) -> list[str]:
+    """按输出扩展名选择音频编码参数（纯音频输出时使用）。"""
+    ext = Path(output).suffix.lower()
+    if ext == ".mp3":
+        return ["-c:a", "libmp3lame", "-b:a", "192k"]
+    if ext in (".m4a", ".mp4"):
+        return ["-c:a", "aac", "-b:a", "192k"]
+    if ext == ".flac":
+        return ["-c:a", "flac"]
+    return ["-c:a", "pcm_s16le"]  # .wav 及默认
+
+
 def extract_audio(video: str, wav: str, sample_rate: int = 16000) -> None:
     """抽取视频音轨为 16k 单声道 wav（Whisper 的输入要求）。"""
     _run(["ffmpeg", "-y", "-i", video, "-vn",
@@ -189,7 +210,11 @@ def build_audio_filter(input_idx: int, windows: list[Window],
 def censor(video: str, output: str, model: str = "base",
            language: str | None = None, mode: str = "mute",
            pad: float = 0.15, sample_rate: int = 16000) -> dict:
-    """主入口：处理视频并返回统计信息。"""
+    """主入口：处理视频/音频并返回统计信息。
+
+    输入可以是视频（mp4/mkv 等）也可以是纯音频（mp3/wav/m4a 等）；
+    纯音频输入时输出仅含处理后的音轨。
+    """
     video = str(Path(video).resolve())
     output = str(Path(output).resolve())
 
@@ -209,13 +234,19 @@ def censor(video: str, output: str, model: str = "base",
             return {"profanity_count": 0, "windows": [], "copied": True,
                     "transcript": full_text.strip()}
 
+        has_video = _has_video_stream(video)
         cmd = ["ffmpeg", "-y", "-i", video]
         for b in extra_inputs:
             cmd += ["-i", b]
-        cmd += ["-filter_complex", filter_text,
-                "-map", "0:v", "-map", "[muted]",
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                output]
+        cmd += ["-filter_complex", filter_text]
+        if has_video:
+            # 有视频流：保留画面，仅重编码音频
+            cmd += ["-map", "0:v", "-map", "[muted]",
+                    "-c:v", "copy", "-c:a", "aac", "-b:a", "192k"]
+        else:
+            # 纯音频：只输出处理后的音轨
+            cmd += ["-map", "[muted]"] + _audio_codec_args(output)
+        cmd += [output]
         _run(cmd)
 
     return {
